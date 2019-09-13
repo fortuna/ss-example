@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	logging "github.com/op/go-logging"
 )
@@ -147,4 +148,60 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		}
 		c.Close()
 	}
+}
+
+func TestTCPProbe49(t *testing.T) {
+	probeExpectTimeout(t, 49)
+}
+
+// func TestTCPProbe50(t *testing.T) {
+// 	probeExpectTimeout(t, 50)
+// }
+
+// // func TestTCPProbe51(t *testing.T) {
+// // 	probe(t, 51)
+// // }
+
+// func probeExpectEOF(t *testing.T, payloadSize int) {
+
+// }
+
+func probeExpectTimeout(t *testing.T, payloadSize int) {
+	s := setupProbe(t, payloadSize)
+	err := (*s).Start()
+	if cErr, ok := err.(*onet.ConnectionError); ok && cErr.IsTimeout() {
+		return
+	} else {
+		t.Fatalf("Unexpected error %v", err)
+	}
+}
+
+func setupProbe(t *testing.T, payloadSize int) *TCPService {
+	timeout := 500 * time.Millisecond
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP failed: %v", err)
+	}
+	cipherList, err := MakeTestCiphers(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testPayload := MakeTestPayload(payloadSize)
+	s := NewTCPService(listener, &cipherList, metrics.NewShadowsocksMetrics(nil), timeout)
+
+	go func() {
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			t.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
+		}
+		conn.Write(testPayload)
+	}()
+
+	defer func() {
+		time.AfterFunc(timeout+250*time.Millisecond, func() {
+			s.Stop()
+		})
+	}()
+
+	return &s
 }

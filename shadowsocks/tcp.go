@@ -128,7 +128,7 @@ func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.Sha
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
 type TCPService interface {
-	Start()
+	Start() error
 	Stop() error
 }
 
@@ -165,14 +165,15 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	return nil
 }
 
-func (s *tcpService) Start() {
+func (s *tcpService) Start() error {
+	errorChan := make(chan *onet.ConnectionError)
 	s.isRunning = true
 	for s.isRunning {
 		var clientConn onet.DuplexConn
 		clientConn, err := s.listener.AcceptTCP()
 		if err != nil {
 			if !s.isRunning {
-				return
+				break
 			}
 			logger.Errorf("Failed to accept: %v", err)
 		}
@@ -207,6 +208,7 @@ func (s *tcpService) Start() {
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
 				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, timeToCipher, connDuration)
+				errorChan <- connError
 			}()
 
 			findStartTime := time.Now()
@@ -217,10 +219,14 @@ func (s *tcpService) Start() {
 				// Keep the connection open until we hit the authentication deadline to protect against probing attacks
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
 				_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
-				drainResult := drainErrToString(drainErr)
+				drainResult, isTimeout := processDrainErr(drainErr)
 				logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
 				s.m.AddTCPProbe(clientLocation, drainResult, proxyMetrics)
-				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
+				if isTimeout {
+					return onet.NewConnectionTimeoutError("ERR_CIPHER", "Failed to find a valid cipher", err)
+				} else {
+					return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
+				}
 			}
 
 			// Clear the authentication deadline
@@ -228,17 +234,20 @@ func (s *tcpService) Start() {
 			return proxyConnection(clientConn, &proxyMetrics)
 		}()
 	}
+
+	err := <-errorChan
+	return err
 }
 
-func drainErrToString(drainErr error) string {
+func processDrainErr(drainErr error) (string, bool) {
 	netErr, ok := drainErr.(net.Error)
 	switch {
 	case drainErr == nil:
-		return "eof"
+		return "eof", false
 	case ok && netErr.Timeout():
-		return "timeout"
+		return "timeout", true
 	default:
-		return "other"
+		return "other", false
 	}
 }
 

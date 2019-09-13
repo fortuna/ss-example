@@ -89,11 +89,24 @@ func Relay(leftConn, rightConn DuplexConn) (int64, int64, error) {
 
 type ConnectionError struct {
 	// TODO: create status enums and move to metrics.go
-	Status  string
-	Message string
-	Cause   error
+	Status    string
+	Message   string
+	Cause     error
+	isTimeout bool
+}
+
+func (e *ConnectionError) Error() string {
+	return e.Message
+}
+
+func (e *ConnectionError) IsTimeout() bool {
+	return e.isTimeout
 }
 
 func NewConnectionError(status, message string, cause error) *ConnectionError {
 	return &ConnectionError{Status: status, Message: message, Cause: cause}
+}
+
+func NewConnectionTimeoutError(status, message string, cause error) *ConnectionError {
+	return &ConnectionError{Status: status, Message: message, Cause: cause, isTimeout: true}
 }
